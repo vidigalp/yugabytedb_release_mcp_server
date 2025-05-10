@@ -15,6 +15,8 @@ from bs4 import BeautifulSoup, Tag
 from bs4.element import NavigableString
 from loguru import logger
 
+from src.common_utils import _normalize_version_string
+
 
 @dataclasses.dataclass
 class YugabyteReleaseInfo:
@@ -25,27 +27,6 @@ class YugabyteReleaseInfo:
     end_of_maintenance: str
     end_of_life: str
     status: Literal["Active", "EOL", "Unknown"] # Status can remain Literal
-
-
-def _normalize_version_string(version_str: Optional[str]) -> str:
-    """Normalizes a version or series string for consistent comparison.
-
-    Removes a leading 'v' (case-insensitive) and strips leading/trailing
-    whitespace.
-
-    Args:
-        version_str: The version or series string to normalize.
-                     Can be None.
-
-    Returns:
-        The normalized string, or an empty string if the input is None.
-    """
-    if not version_str:
-        return ""
-    s = str(version_str).strip()
-    if s.lower().startswith('v'):
-        s = s[1:]
-    return s
 
 
 def _parse_table(
@@ -130,6 +111,11 @@ def _parse_table(
                 series_name = series_name.removesuffix(" Preview").strip()
             elif series_name.endswith("Preview"):
                  series_name = series_name.removesuffix("Preview").strip()
+        
+        #if not release_type_str: # Check added from previous steps, ensuring it's still here
+        #    logger.warning(f"Could not determine release type string for series '{series_name}' from cell '{series_cell_text}'. Skipping row.")
+        #    continue
+
 
         released_date: str = cells[1].get_text(strip=True)
         eom_date: str = cells[2].get_text(strip=True)
