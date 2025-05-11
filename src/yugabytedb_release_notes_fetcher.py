@@ -1,238 +1,334 @@
 # yugabytedb_release_mcp_server/src/yugabytedb_release_notes_fetcher.py
-"""Fetches and parses YugabyteDB release notes from documentation.
-
-This module provides utilities to retrieve release notes as LLM-optimized Markdown
-for specific YugabyteDB versions or entire release series. It primarily uses the
-official YugabyteDB releases RSS feed and the corresponding release series pages
-on the documentation website, processed by the crawl4ai library.
-
-This module requires 'requests', 'feedparser', 'loguru', and 'crawl4ai'.
-Install them using:
-`pip install requests feedparser loguru crawl4ai`
 """
-
-import asyncio
+Fetches and processes YugabyteDB release notes for LLM consumption.
+Uses requests for fetching, BeautifulSoup for HTML processing,
+and crawl4ai for Markdown conversion.
+"""
 import re
-import sys
-from typing import Optional
+from typing import Optional, Tuple
 
-import feedparser
 import requests
-from crawl4ai import AsyncWebCrawler # type: ignore
+from bs4 import BeautifulSoup, Tag
+from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
+from crawl4ai.content_filter_strategy import PruningContentFilter, BM25ContentFilter
+from crawl4ai.async_configs import CrawlerRunConfig
 from loguru import logger
 
-from src.common_utils import _normalize_version_string
+# Assuming common_utils.py is in the same directory or src and contains _normalize_version_string
+# from .common_utils import _normalize_version_string
+# For now, if common_utils is not available, we'll define a simple normalizer here.
+# If you have `src.common_utils._normalize_version_string`, uncomment the import above
+# and remove the local _normalize_version_string function.
+def _normalize_version_string(version_str: str) -> str:
+    """Helper to normalize version strings, e.g., 'v2.20.1' -> '2.20.1'."""
+    if not version_str:
+        return ""
+    return version_str.lstrip('vV ')
 
-
-def _filter_llm_markdown(markdown_content: str) -> str:
+def _parse_input_to_url_parts(version_or_series: str) -> Tuple[str, Optional[str]]:
     """
-    Filters out unwanted sections from the LLM-optimized Markdown.
+    Parses the input string to determine the series for URL construction and
+    the specific version tag for HTML ID lookup or Markdown section extraction.
 
     Args:
-        markdown_content: The raw Markdown string.
+        version_or_series: The YugabyteDB version or series string
+                           (e.g., "2.20", "v2024.1", "2.20.1.0", "v2024.1.2.0").
 
     Returns:
-        The filtered Markdown string.
+        A tuple containing:
+        - series_url_part (str): The part of the version used for the URL (e.g., "v2.20", "v2024.1").
+                                 Always starts with 'v'.
+        - specific_version_tag (Optional[str]): The full version tag if a specific
+                                                 version was provided (e.g., "v2.20.1.0", "v2024.1.2.0"),
+                                                 always starts with 'v'. Otherwise None.
+    Raises:
+        ValueError: If the input string format is unrecognized.
     """
-    logger.debug("Starting Markdown filtering.")
-    filtered_content = markdown_content
+    if not version_or_series:
+        raise ValueError("Input version_or_series cannot be empty.")
 
-    # Regex patterns for sections to remove:
-    patterns_to_remove = [
-        # Docker section: Matches "### Docker", optional link, and optional code block
-        re.compile(r"^### Docker\s*(?:\[.*?\]\(.*?\))?\s*\n(?:^```[\s\S]*?^```\s*)?", re.MULTILINE),
-        # Third-party licenses: Matches the bolded text and everything until the next significant break
-        re.compile(r"^\*\*Third-party licenses:\*\*[\s\S]*?(?=\n##|\n\n---|\n\n\n\n|$)", re.MULTILINE),
-        # Downloads section: Matches "### Downloads", optional link, and potentially content until next heading or significant break
-        re.compile(r"^### Downloads\s*(?:\[.*?\]\(.*?\))?[\s\S]*?(?=\n##|\n\n---|\n\n\n\n|$)", re.MULTILINE),
-        # "On this page" navigation element
-        re.compile(r"^!\[On this page\]\(https://docs\.yugabyte\.com/icons/list-icon\.svg\) On this page\s*\n?", re.MULTILINE),
-        # Remove "Edit this page" links often found at the bottom
-        re.compile(r"\[Edit this page\]\(.*?\)\s*\n?", re.MULTILINE),
-        # Remove "Found an issue" or "Suggest an edit" links
-        re.compile(r"\[Found an issue\? Suggest an edit\.\]\(.*?\)\s*\n?", re.MULTILINE),
-        # Generic pattern for "Learn more" or "Read more" sections that might be just links or short paragraphs
-        re.compile(r"^(?:##?#?#?\s*)?(?:Learn more|Read more|Further reading|Next steps)[\s\S]*?(?=\n##|\n\n---|\n\n\n\n|$)", re.MULTILINE | re.IGNORECASE),
-        # Remove multiple blank lines to make it more compact
-        re.compile(r"\n{3,}", re.MULTILINE),
-    ]
+    normalized_input = version_or_series.lstrip('vV ')
+    parts = normalized_input.split('.')
 
-    for i, pattern in enumerate(patterns_to_remove):
-        prev_len = len(filtered_content)
-        filtered_content = pattern.sub("", filtered_content)
-        if len(filtered_content) < prev_len:
-            logger.debug(f"Applied filter pattern {i+1}, removed {prev_len - len(filtered_content)} characters.")
-        else:
-            logger.debug(f"Filter pattern {i+1} did not match.")
-
-    # Replace multiple newlines (more than 2) with just two to clean up.
-    filtered_content = re.sub(r'\n{3,}', '\n\n', filtered_content)
-    logger.debug("Markdown filtering completed.")
-    return filtered_content.strip()
-
-
-def _get_series_page_url_from_rss(
-    rss_feed_url: str, target_series: str
-) -> Optional[str]:
-    """Finds the URL for a specific release series page from the RSS feed.
-
-    Args:
-        rss_feed_url: URL of the main YugabyteDB releases RSS feed.
-        target_series: The target series (e.g., "2.20", "2024.1", "v2.18").
-                       Normalization (like adding 'v') is handled internally.
-
-    Returns:
-        The URL of the series page if found, otherwise None.
-    """
-    logger.debug(f"Fetching RSS feed from: {rss_feed_url} for series: {target_series}")
-    try:
-        feed = feedparser.parse(rss_feed_url)
-    except Exception as e:
-        logger.error(f"Exception fetching or parsing RSS feed {rss_feed_url}: {e}")
-        return None
-
-    if feed.bozo:
-        logger.warning(
-            f"Error parsing RSS feed {rss_feed_url} (bozo set): {feed.bozo_exception}"
+    if len(parts) < 2:
+        raise ValueError(
+            f"Invalid version or series format: '{version_or_series}'. "
+            "Expected at least major.minor (e.g., '2.20', '2024.1')."
         )
-        if not feed.entries:
-            return None
 
-    normalized_target_series_input = _normalize_version_string(target_series)
+    series_url_part = f"v{parts[0]}.{parts[1]}"
+    specific_version_tag: Optional[str] = None
 
-    for entry in feed.entries:
-        link = entry.get("link", "")
-        title = entry.get("title", "")
+    if len(parts) > 2:
+        # Ensure specific_version_tag always starts with 'v' for consistency with HTML IDs
+        specific_version_tag = f"v{normalized_input}"
 
-        link_last_segment = link.strip("/").split("/")[-1]
-        normalized_title_series = _normalize_version_string(title.replace("YugabyteDB", "").strip())
-
-        if _normalize_version_string(link_last_segment) == normalized_target_series_input or \
-           normalized_title_series == normalized_target_series_input:
-            logger.info(f"Found series page URL for '{target_series}' via RSS: {link}")
-            return link
-
-    logger.warning(
-        f"Series page URL for '{target_series}' not found directly in RSS feed {rss_feed_url}."
-    )
-    return None
+    return series_url_part, specific_version_tag
 
 
-async def fetch_yugabytedb_version_notes(
-    target_version_or_series: str,
-    rss_feed_url: str = "https://docs.yugabyte.com/preview/releases/ybdb-releases/index.xml",
-) -> Optional[str]:
-    """Fetches release notes as LLM-optimized Markdown for a YugabyteDB version or series.
-
-    This function is asynchronous and uses AsyncWebCrawler.
-
-    Args:
-        target_version_or_series: YugabyteDB version (e.g., "2.20.1.0", "v2.25.0.0-b123")
-                                  or series (e.g., "v2.20", "2024.1") to fetch notes for.
-        rss_feed_url: URL of the main YugabyteDB releases RSS feed.
-
-    Returns:
-        A string containing the LLM-optimized and filtered Markdown of the release notes,
-        or None if the notes cannot be fetched or processed.
+def _extract_specific_version_html_content(
+    full_soup: BeautifulSoup,
+    version_id_tag: str
+) -> Optional[BeautifulSoup]:
     """
-    normalized_target = _normalize_version_string(target_version_or_series)
-    target_parts = normalized_target.split(".")
+    Extracts the HTML content for a specific version ID from the full page soup.
+    Content is extracted from the version's heading tag until the next heading
+    of the same or higher level, or end of document.
+    The version_id_tag is expected to be the 'id' attribute of the heading (e.g., "v2.20.1.0").
+    """
+    start_node = full_soup.find(id=version_id_tag)
 
-    target_series_normalized: str
-    # target_minor_spec: Optional[str] = None # Keep for potential future use with selector
+    # Try finding by string if ID match fails (some older versions might not have perfect ID tags)
+    if not start_node:
+        normalized_text_to_find = version_id_tag.lstrip('v') # e.g., "2.20.1.0"
+        # Look for h2 or h3 that contains this version string
+        for header_tag_name in ['h2', 'h3', 'h4']:
+            headers = full_soup.find_all(header_tag_name)
+            for header in headers:
+                if normalized_text_to_find in header.get_text(strip=True):
+                    start_node = header
+                    logger.debug(f"Found start node by text match for {version_id_tag}: <{start_node.name}> {header.get_text(strip=True)[:30]}")
+                    break
+            if start_node:
+                break
 
-    if len(target_parts) >= 2:
-        target_series_normalized = f"{target_parts[0]}.{target_parts[1]}"
-        # if len(target_parts) > 2 or "-b" in normalized_target: # If specific minor version
-        #     target_minor_spec = normalized_target
-    else:
-        logger.error(f"Invalid target_version_or_series: '{target_version_or_series}'. Must be at least X.Y or vX.Y format.")
+    if not start_node or not isinstance(start_node, Tag):
+        logger.warning(f"Could not find start node for version ID tag: {version_id_tag}")
         return None
 
-    series_for_rss = target_series_normalized
-    if target_series_normalized[0].isdigit():
-        series_for_rss = f"v{target_series_normalized}"
+    logger.debug(f"Found start node for {version_id_tag}: <{start_node.name}> id='{start_node.get('id', '')}'")
 
-    series_page_url = _get_series_page_url_from_rss(rss_feed_url, series_for_rss)
-
-    if not series_page_url:
-        logger.warning(f"Series '{series_for_rss}' not found in RSS. Attempting direct URL construction.")
-        constructed_series_segment = series_for_rss
-        if target_series_normalized[0].isdigit() and not constructed_series_segment.startswith('v'):
-            constructed_series_segment = f"v{target_series_normalized}"
-
-        series_page_url = f"https://docs.yugabyte.com/preview/releases/ybdb-releases/{constructed_series_segment}/"
-        logger.info(f"Trying fallback URL: {series_page_url}")
-        try:
-            response = requests.head(series_page_url, timeout=5, allow_redirects=True)
-            if response.status_code != 200:
-                logger.error(f"Fallback URL {series_page_url} invalid (status: {response.status_code}). Cannot fetch notes.")
-                return None
-            logger.info(f"Fallback URL {series_page_url} seems valid.")
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error checking fallback URL {series_page_url}: {e}")
-            return None
-
-    url_to_crawl = series_page_url
-    # css_selector_for_minor_version_if_any: Optional[str] = None
-    # if target_minor_spec:
-    #     anchor_version_part = target_minor_spec.replace(".", "-").replace("-b", "b") # Handle build numbers in anchors
-    #     css_selector_for_minor_version_if_any = f"#version-{anchor_version_part}"
-    #     logger.info(f"Targeting specific minor version. URL: {url_to_crawl}, Selector for context: {css_selector_for_minor_version_if_any}")
-    # else:
-    #     logger.info(f"Targeting entire series page: {url_to_crawl}")
+    content_elements = [start_node]
 
     try:
-        async with AsyncWebCrawler(
-            engine_config={"engine": "readability"},
-            parser_config={"parser": "markdown", "llm_optimize": True}
-        ) as crawler:
-            logger.info(f"Crawling page {url_to_crawl} for target '{target_version_or_series}'.")
-            # For now, crawl the entire page. Specific minor version content needs to be identified by the LLM.
-            result = await crawler.arun(url=url_to_crawl)
+        start_node_level = int(start_node.name[1:]) if start_node.name.startswith('h') and len(start_node.name) > 1 and start_node.name[1:].isdigit() else 99
+    except ValueError:
+        start_node_level = 99
 
-            if result and result.markdown:
-                logger.info(f"Successfully crawled. Length before filtering: {len(result.markdown)}")
-                filtered_markdown = _filter_llm_markdown(result.markdown)
-                logger.info(f"Markdown filtered. Length after filtering: {len(filtered_markdown)}")
-                return filtered_markdown
-            else:
-                logger.warning(f"crawl4ai (AsyncWebCrawler) did not return Markdown content for {url_to_crawl}")
-                return None
-    except ImportError:
-        logger.error("crawl4ai library is not installed. Please install it with `pip install crawl4ai`.")
-        return None
-    except Exception as e:
-        logger.error(f"Error during crawl4ai (AsyncWebCrawler) processing for {url_to_crawl}: {e}")
+    for sibling in start_node.find_next_siblings():
+        if isinstance(sibling, Tag) and sibling.name.startswith('h') and len(sibling.name) > 1 and sibling.name[1:].isdigit():
+            try:
+                sibling_level = int(sibling.name[1:])
+                if sibling_level <= start_node_level:
+                    logger.debug(f"Stopping at next header of same/higher level: <{sibling.name}>")
+                    break
+            except ValueError:
+                pass # Sibling is not a standard h-tag name like h1, h2 etc.
+        content_elements.append(sibling)
+
+    if not content_elements:
         return None
 
+    html_string_of_section = "".join(str(el) for el in content_elements)
+    if not html_string_of_section.strip():
+        logger.warning(f"Extracted HTML section for {version_id_tag} is empty string.")
+        return None
 
-async def main_async():
-    """Async main function to test the fetcher."""
-    logger.remove()
-    logger.add(sys.stderr, level="DEBUG") # Changed to DEBUG for more verbose test output
+    section_soup = BeautifulSoup(f"<div>{html_string_of_section}</div>", 'html.parser').div
+    if not section_soup or not section_soup.contents: # Check if div is empty or parsing failed
+        logger.warning(f"Failed to create valid soup from extracted HTML for {version_id_tag}.")
+        return None
 
-    versions_to_test = [
-        "v2.20.1.0",
-        "v2.20",
-        "v2024.1.0.0",
-        "v2024.1",
-        "v2.25", # Preview series - often has Docker and Downloads
-    ]
+    logger.info(f"Successfully extracted HTML section for version ID '{version_id_tag}'.")
+    return section_soup
 
-    for version_input in versions_to_test:
-        logger.info(f"\n--- Fetching release notes Markdown for: {version_input} ---")
-        markdown_output = await fetch_yugabytedb_version_notes(version_input)
-        if markdown_output:
-            logger.info(f"Successfully fetched Markdown for '{version_input}'. Length: {len(markdown_output)}")
-            print("\n" + "="*80)
-            print(f"FILTERED MARKDOWN for {version_input}:")
-            # For testing, you might want to print more or all of it
-            # print(markdown_output[:2000] + ("..." if len(markdown_output) > 2000 else ""))
-            print(markdown_output) # Print all for verification during testing
-            print("="*80 + "\n")
+
+def _filter_html_content(soup_to_filter: BeautifulSoup):
+    """
+    Modifies the BeautifulSoup object in-place to remove unwanted sections.
+    """
+    if not soup_to_filter:
+        logger.warning("Attempted to filter None soup object.")
+        return
+
+    logger.debug("Applying HTML exclusion filters...")
+
+    # 1. Remove "Third-party licenses" paragraphs
+    for p_tag in soup_to_filter.find_all('p'):
+        strong_tag = p_tag.find('strong')
+        if strong_tag and 'Third-party licenses:' in strong_tag.get_text(strip=True, separator=" "):
+            logger.trace(f"Decomposing third-party license paragraph: {p_tag.get_text(strip=True)[:100]}")
+            p_tag.decompose()
+
+    # 2. Remove "Downloads" H3 sections and their associated content (ULs, Docker P+DIV)
+    for h3_download_tag in soup_to_filter.find_all(['h3', 'h4'], string=re.compile(r'Downloads', re.I)): # Could be H3 or H4
+        logger.trace(f"Found 'Downloads' header: <{h3_download_tag.name}> {h3_download_tag.get_text(strip=True)}")
+
+        elements_to_remove = [h3_download_tag]
+        current_element = h3_download_tag
+
+        while (current_element := current_element.find_next_sibling()):
+            if not isinstance(current_element, Tag):
+                continue
+
+            # Stop if we hit another H2, H3 or H4 (likely next section or higher level)
+            if current_element.name in ['h2', 'h3', 'h4']:
+                break
+
+            # Check for <ul class="nav yb-pills"> or any UL directly under Downloads
+            if current_element.name == 'ul':
+                if ('nav' in current_element.get('class', []) and \
+                    'yb-pills' in current_element.get('class', [])) or \
+                    (h3_download_tag.find_next_sibling() == current_element): # a generic ul right after
+                    logger.trace(f"Adding downloads UL ({current_element.get('class', '')}) to removal list.")
+                    elements_to_remove.append(current_element)
+                    continue
+
+            # Check for <p><strong>Docker:</strong></p>
+            if current_element.name == 'p':
+                strong_tag = current_element.find('strong')
+                if strong_tag and 'Docker:' in strong_tag.get_text(strip=True, separator=" "):
+                    logger.trace("Adding Docker P to removal list.")
+                    elements_to_remove.append(current_element)
+                    # Check for the subsequent <div class="highlight"> for Docker command
+                    docker_code_div = current_element.find_next_sibling('div', class_='highlight')
+                    if docker_code_div and docker_code_div.find_previous_sibling() == current_element:
+                         logger.trace("Adding Docker code DIV to removal list.")
+                         elements_to_remove.append(docker_code_div)
+                    continue
+
+            # Break if it's not one of the known subsequent elements for downloads.
+            # This means we only grab ULs and Docker P/DIVs immediately following the H3.
+            if not (current_element.name == 'ul' or current_element.name == 'p' or current_element.name == 'div'):
+                 break
+
+        for el in reversed(elements_to_remove):
+            el.decompose()
+
+    # Independent pass for any remaining <p><strong>Docker:</strong></p> that weren't under a Downloads H3/H4
+    for p_tag in soup_to_filter.find_all('p'):
+        strong_tag = p_tag.find('strong')
+        if strong_tag and 'Docker:' in strong_tag.get_text(strip=True, separator=" "):
+            # Check if it was already decomposed by being part of a downloads section
+            if not p_tag.parent: continue
+
+            logger.trace(f"Found standalone Docker P: {p_tag.get_text(strip=True)[:50]}")
+            docker_code_div = p_tag.find_next_sibling('div', class_='highlight')
+            if docker_code_div and docker_code_div.find_previous_sibling() == p_tag:
+                logger.trace("Decomposing standalone Docker code div.")
+                docker_code_div.decompose()
+            p_tag.decompose()
+
+    logger.debug("Finished applying HTML exclusion filters.")
+
+
+def fetch_yugabytedb_version_notes(version_or_series: str) -> Optional[str]:
+    """
+    Fetches YugabyteDB release notes using requests, processes HTML with BeautifulSoup,
+    and converts to LLM-friendly Markdown using crawl4ai's DefaultMarkdownGenerator.
+
+    Args:
+        version_or_series: The YugabyteDB version or series string
+                           (e.g., "2.20", "v2024.1", "2.20.1.0").
+
+    Returns:
+        An LLM-optimized Markdown string of the release notes, or None if fetching/processing fails.
+    """
+    try:
+        series_url_part, specific_version_tag = _parse_input_to_url_parts(version_or_series)
+    except ValueError as e:
+        logger.error(f"Error parsing input '{version_or_series}': {e}")
+        return None
+
+    target_url = f"https://docs.yugabyte.com/preview/releases/ybdb-releases/{series_url_part}/"
+    logger.info(f"Fetching release notes from URL: {target_url}")
+    logger.info(f"Targeting series: {series_url_part}, specific version HTML ID: {specific_version_tag or 'N/A'}")
+
+    try:
+        response = requests.get(target_url, timeout=15) # Increased timeout slightly
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching URL {target_url}: {e}")
+        return None
+
+    full_page_soup = BeautifulSoup(response.content, 'html.parser')
+
+    # This will be the soup object that gets filtered and converted
+    soup_to_process = full_page_soup
+
+    if specific_version_tag:
+        logger.info(f"Attempting to extract HTML section for version ID: '{specific_version_tag}'.")
+        # specific_version_tag from _parse_input_to_url_parts already starts with 'v'
+        extracted_section_soup = _extract_specific_version_html_content(full_page_soup, specific_version_tag)
+        if extracted_section_soup:
+            soup_to_process = extracted_section_soup # Process only the extracted section
+            logger.info(f"Successfully created soup for specific version section '{specific_version_tag}'.")
         else:
-            logger.info(f"No Markdown release notes found for '{version_input}'.")
+            logger.warning(
+                f"Could not extract specific HTML section for version ID '{specific_version_tag}'. "
+                f"Proceeding with filtering on the full page content for series '{series_url_part}'. "
+                f"This may not be the desired output for a specific version query."
+            )
+            # soup_to_process remains full_page_soup
+
+    _filter_html_content(soup_to_process) # Modifies soup_to_process in-place
+
+    processed_html_string = str(soup_to_process)
+
+    # Check if the soup became effectively empty (e.g. only "<div></div>" or similar)
+    # A simple check for significant content:
+    if len(re.sub(r'<[^>]+>', '', processed_html_string).strip()) < 50 : # Less than 50 chars of text content
+        logger.warning(f"HTML content for '{version_or_series}' became sparse after processing. URL: {target_url}")
+        # Potentially return None if this is considered an error.
+        # For now, we'll let it convert, might result in empty/minimal markdown.
+        if not re.sub(r'<[^>]+>', '', processed_html_string).strip(): # Truly empty
+             logger.error(f"HTML content for '{version_or_series}' is effectively empty. Returning None.")
+             return None
+
+
+    # Pruning - removing unwanted contents
+    #prune_filter = PruningContentFilter(
+    #    threshold=0.5,
+    #    threshold_type="fixed",
+    #    min_word_threshold=10
+    #)
+    #md_generator = DefaultMarkdownGenerator(content_filter=prune_filter)
+    #config = CrawlerRunConfig(markdown_generator=md_generator)
+
+    # BM25 - Selection of relevant chunks from the whole data
+    bm25_filter = BM25ContentFilter(
+        user_query="health benefits fruit",
+        bm25_threshold=1.2
+    )
+    md_generator = DefaultMarkdownGenerator(content_filter=bm25_filter)
+    markdown = md_generator.generate_markdown(processed_html_string)
+
+    #markdown = re.sub(r"\n{3,}", "\n\n", markdown).strip()
+
+    if not markdown:
+        logger.warning(f"Markdown conversion resulted in empty content for '{version_or_series}'. URL: {target_url}")
+        return None
+
+    logger.info(f"Finished processing release notes for '{version_or_series}'.")
+    return markdown
 
 if __name__ == "__main__":
-    asyncio.run(main_async())
+    import sys
+    logger.remove()
+    # Use "TRACE" for most detailed BeautifulSoup/filter logs
+    # Use "DEBUG" for general flow and extraction info
+    # Use "INFO" for high-level results
+    logger.add(sys.stderr, level="DEBUG")
+
+    versions_to_test = [
+        "v2.20.3.0",       # Specific patch, YB docs ID: v2.20.3.0
+        "2024.2.1.0",      # Specific patch, YB docs ID: v2024.2.1.0
+        "v2.18",           # Series only
+        "2024.1",          # Series only
+        "2.16.3.0",        # Specific patch that might have "Downloads" section
+        # "v2.14.2.0",     # Older specific version for structure check
+        # "v2.12.11.0",
+        "unsupported.version",
+        "v2.999.0.0"       # Non-existent version
+    ]
+
+    for ver_str in versions_to_test:
+        print(f"\n--- Testing: {ver_str} ---")
+        notes = fetch_yugabytedb_version_notes(ver_str)
+        if notes:
+            print(f"Markdown for {ver_str} (first 700 chars):\n{notes}")
+            #print(f"Markdown for {ver_str} (first 700 chars):\n{notes[:700]}...")
+            # print(f"\nFull Markdown for {ver_str}:\n{notes}")
+        else:
+            print(f"No notes returned or notes were empty for {ver_str}.")
+        print("--- End Test ---")
