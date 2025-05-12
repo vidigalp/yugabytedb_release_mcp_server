@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The YugabyteDB Release MCP (Multi-Context Provider) Server is designed to provide Large Language Models (LLMs) with contextual information related to YugabyteDB software releases. It fetches data from official sources like the YugabyteDB documentation and the National Vulnerability Database (NVD) to enable LLMs to answer queries and generate content with up-to-date and accurate details about different YugabyteDB versions.
+The YugabyteDB Release MCP ([Model Context Protocol](https://modelcontextprotocol.io/)) Server is designed to provide Large Language Models (LLMs) with contextual information related to YugabyteDB software releases. It fetches data from official sources like the YugabyteDB documentation and the National Vulnerability Database (NVD) to enable LLMs to answer queries and generate content with up-to-date and accurate details about different YugabyteDB versions.
 
 ## Functionality
 
