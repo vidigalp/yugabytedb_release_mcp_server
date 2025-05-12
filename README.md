@@ -1,3 +1,4 @@
+# yugabytedb_release_mcp_server/README.md
 # YugabyteDB Release MCP Server
 
 ## Purpose
@@ -32,8 +33,15 @@ The MCP Server provides the following tools:
 *   **`get_release_notes(version_or_series: str)`:**
     *   **Source:** Scrapes and processes the release notes section from the official YugabyteDB documentation page for the specified version or series.
     *   **Returns:** A string containing the release notes content in Markdown format. It attempts to isolate the specific version's notes but may fall back to the entire series notes.
-*   **`get_technical_advisories(version_number: Optional[str] = None)`:**
-    *   **Status:** **Currently Not Implemented.** Returns a JSON message indicating it's not supported.
+*   **`get_technical_advisories(version_or_series: Optional[str] = None)`:**
+    *   **Source:** Scrapes the official YugabyteDB Technical Advisories documentation page.
+    *   **Returns:** A JSON string representing a list of Technical Advisory (TA) objects, optionally filtered by the specified version or series. If filtered, it matches TAs affecting the derived series (e.g., "2.18" from "2.18.1.0"). Each object includes:
+        *   `id` (str): The advisory identifier (e.g., "TA-12345").
+        *   `title` (str): The title of the advisory.
+        *   `url` (str): The direct URL to the advisory's page.
+        *   `affected_versions_raw` (str): The raw text from the 'Affected Versions' column.
+        *   `affected_series_parsed` (List[str]): A list of series identifiers parsed from the raw text (e.g., ["2.18", "2.20"]).
+        *   `content` (Optional[str]): The fetched text content of the advisory page (or an error message if fetching failed).
 
 ## Technical Stack
 

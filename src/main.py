@@ -20,6 +20,11 @@ from src.yugabytedb_release_info_scraper import (
 )
 from src.yugabytedb_release_notes_fetcher import fetch_yugabytedb_version_notes
 
+from src.yugabytedb_tech_advisories_fetcher import (
+    fetch_yugabytedb_tech_advisories,
+    YugabyteTechAdvisory,
+)
+
 load_dotenv()
 
 # Fetch NVD API Key from environment if available
@@ -209,25 +214,72 @@ async def get_cve_list(
 async def get_technical_advisories(
     ctx: Context, version_number: str | None = None
 ) -> str:
-    """Fetches technical advisories for YugabyteDB. (Currently Not Implemented)
+    """Fetches YugabyteDB Technical Advisories (TAs), optionally filtered by version or series.
 
-    Note: This functionality requires a dedicated scraper or data source for
-    technical advisories, which is not yet implemented.
+        This tool scrapes the official YugabyteDB Technical Advisories page
+        (https://docs.yugabyte.com/preview/releases/techadvisories/) to gather
+        information about known issues or important notices.
 
-    Args:
-        ctx: The MCP server provided context.
-        version_number: Optional YugabyteDB version number (currently ignored).
+        Filtering Logic:
+        - If `version_or_series` is provided (e.g., "2.18", "v2024.1", "2.20.3.0"),
+          the tool identifies the corresponding series (e.g., "2.18", "2024.1", "2.20")
+          and returns only the advisories listed as affecting that series based on
+          parsing the 'Affected Versions' column on the documentation page.
+        - If `version_or_series` is None, the tool retrieves all available advisories.
 
-    Returns:
-        A JSON string indicating that the feature is not implemented.
-    """
-    logger.warning("get_technical_advisories called, but it is not implemented.")
-    return json.dumps(
-        {
-            "status": "Not Implemented",
-            "message": "Fetching technical advisories is not currently supported.",
-        }
-    )
+        After identifying relevant advisories, it fetches the detailed content from each
+        advisory's specific page.
+
+        Args:
+            ctx: The MCP server provided context.
+            version_or_series: Optional. The YugabyteDB version or series string to filter by.
+                               Examples: "2.18", "v2024.1", "2.18.1.0". If None, fetches all.
+
+        Returns:
+            A JSON string representing a list of technical advisory objects matching the criteria.
+            Each object in the list contains:
+            - `id` (str): The advisory identifier (e.g., "TA-12345").
+            - `title` (str): The title of the advisory.
+            - `url` (str): The direct URL to the advisory's page.
+            - `affected_versions_raw` (str): The raw text from the 'Affected Versions' column.
+            - `affected_series_parsed` (List[str]): A list of series identifiers parsed from the raw text (e.g., ["2.18", "2.20"]).
+            - `content` (Optional[str]): The fetched text content of the advisory page.
+                                        Will be "Error: Content could not be retrieved." if fetching failed.
+
+            Example Success (filtered for "2.18"):
+            '[ { "id": "TA-123", "title": "Issue under load", "url": "...", "affected_versions_raw": "2.18.x", "affected_series_parsed": ["2.18"], "content": "Detailed description..." }, ... ]'
+
+            Example Success (all):
+            '[ { "id": "TA-123", ... }, { "id": "TA-456", ... }, ... ]'
+
+            Example Error:
+            '{ "error": "Failed to retrieve technical advisories due to: <reason>" }'
+        """
+        target_display = f"{version_or_series}" if version_or_series else "All"
+        logger.info(f"Fetching technical advisories for target: {target_display}")
+        try:
+            # Call the imported fetcher function
+            advisories_data: list[
+                dict
+            ] = fetch_yugabytedb_tech_advisories(
+                target_version_or_series=version_or_series
+                # base_url could be passed here if needed, but defaults are usually fine
+            )
+
+            logger.success(
+                f"Found {len(advisories_data)} technical advisory/advisories for target {target_display}."
+            )
+            # The fetcher function already returns a list of dicts, ready for JSON
+            return json.dumps(advisories_data)
+
+        except Exception as e:
+            logger.error(
+                f"Error fetching technical advisories for target {target_display}: {e}",
+                exc_info=True,
+            )
+            return json.dumps(
+                {"error": f"Failed to retrieve technical advisories due to: {e}"}
+            )
 
 
 @mcp.tool()
