@@ -2,55 +2,72 @@
 
 ## Purpose
 
-The YugabyteDB Release MCP (Multi-Context Provider) Server is designed to provide Large Language Models (LLMs) with contextual information related to YugabyteDB software releases. This enables LLMs to answer queries and generate content with up-to-date and accurate details about different YugabyteDB versions.
+The YugabyteDB Release MCP (Multi-Context Provider) Server is designed to provide Large Language Models (LLMs) with contextual information related to YugabyteDB software releases. It fetches data from official sources like the YugabyteDB documentation and the National Vulnerability Database (NVD) to enable LLMs to answer queries and generate content with up-to-date and accurate details about different YugabyteDB versions.
 
 ## Functionality
 
-The MCP Server will initially provide the following information:
+The MCP Server provides the following tools:
 
-*   **Release Version (JSON):** Detailed information about specific YugabyteDB releases.
-    *   `version`: The full version number, including build information if applicable (e.g., "2.25.1.0", "2.25.1.0-b381").
-    *   `series`: The release series name as found in official documentation (e.g., "v2.14", "v2.20").
-    *   `type`: The type of the release (e.g., PREVIEW, LTS, STS, NONE).
-    *   `released`: The date when the version was officially released.
-    *   `end_of_maintenance`: The date marking the end of the maintenance period for the version.
-    *   `end_of_life`: The date marking the end of life (EOL) for the version.
-    *   `status`: The current status of the release (e.g., ACTIVE, EOL).
-*   **CVE List:** A list of Common Vulnerabilities and Exposures (CVEs) associated with YugabyteDB versions.
-*   **Technical Advisories:** Access to technical advisories for specific versions (e.g., from [https://docs.yugabyte.com/preview/releases/techadvisories/](https://docs.yugabyte.com/preview/releases/techadvisories/)).
-*   **Release Notes:** Links to or content from the official release notes for each version (e.g., [https://docs.yugabyte.com/preview/releases/ybdb-releases/v2.25/#change-log](https://docs.yugabyte.com/preview/releases/ybdb-releases/v2.25/#change-log)).
+*   **`get_release_version_info(version_or_series: str)`:**
+    *   **Source:** Scrapes the official YugabyteDB documentation release page.
+    *   **Returns:** A JSON string containing release lifecycle details for the specified version or series.
+        *   `series` (str): Release series identifier (e.g., "2.20").
+        *   `type` (Optional[str]): Release type (e.g., "LTS", "STS", "Preview").
+        *   `released` (str): Date the series was first released.
+        *   `end_of_maintenance` (str): End of maintenance date.
+        *   `end_of_life` (str): End of life date.
+        *   `status` (Literal["Active", "EOL", "Unknown"]): Current status.
+*   **`get_cve_list(version_or_series: Optional[str] = None)`:**
+    *   **Source:** Queries the National Vulnerability Database (NVD) API v2.0.
+    *   **Returns:** A JSON string representing a list of CVE objects related to YugabyteDB, optionally filtered by the specified version or series. Each object includes:
+        *   `cve_id` (str): CVE identifier.
+        *   `description` (str): Vulnerability description.
+        *   `cvss_v3_score` (Optional[float]): CVSS v3 base score.
+        *   `cvss_v3_severity` (Optional[str]): CVSS v3 severity.
+        *   `affected_info` (str): Summary of affected versions/ranges from NVD data.
+        *   `published_date` (str): NVD publication date.
+        *   `last_modified_date` (str): NVD last modification date.
+        *   `url` (str): Link to the NVD entry.
+    *   **Note:** Using an `NVD_API_KEY` environment variable is recommended for better performance.
+*   **`get_release_notes(version_or_series: str)`:**
+    *   **Source:** Scrapes and processes the release notes section from the official YugabyteDB documentation page for the specified version or series.
+    *   **Returns:** A string containing the release notes content in Markdown format. It attempts to isolate the specific version's notes but may fall back to the entire series notes.
+*   **`get_technical_advisories(version_number: Optional[str] = None)`:**
+    *   **Status:** **Currently Not Implemented.** Returns a JSON message indicating it's not supported.
 
 ## Technical Stack
 
 *   **Programming Language:** Python 3.12
-*   **Package Manager:** `uv`
+*   **Framework:** FastMCP
+*   **Key Libraries:** `requests`, `beautifulsoup4`, `packaging`, `loguru`, `python-dotenv`, `crawl4ai`
+*   **Package Manager:** `uv` (recommended) or `pip`
 
 ## Getting Started
-
-(Details on setting up the virtual environment, installing dependencies, and running the server will be added here.)
 
 ### Prerequisites
 
 *   Python 3.12
-*   `uv` package manager
+*   `uv` package manager (recommended, or `pip` with `venv`)
 
-### Installation (Example)
+### Installation
 
 ```bash
 # Clone the repository
 git clone <repository-url>
 cd yugabytedb_release_mcp_server
 
-# Create a virtual environment and install dependencies using uv
+# Create a virtual environment using uv (recommended)
 uv venv
-uv pip install -r requirements.txt # Assuming a requirements.txt file
-```
+source .venv/bin/activate # Or `.\.venv\Scripts\activate` on Windows
 
-## Usage
+# Install dependencies using uv
+uv pip install -r requirements.txt # Make sure requirements.txt is up-to-date
 
-(Details on how to run the server and interact with its API endpoints will be added here.)
+# --- OR ---
 
-```bash
-# Example command to run the server (to be defined)
-python main.py
-```
+# Create a virtual environment using venv
+# python -m venv .venv
+# source .venv/bin/activate # Or `.\.venv\Scripts\activate` on Windows
+
+# Install dependencies using pip
+# pip install -r requirements.txt
