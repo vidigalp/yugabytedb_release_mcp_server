@@ -212,7 +212,7 @@ async def get_cve_list(
 
 @mcp.tool()
 async def get_technical_advisories(
-    ctx: Context, version_number: str | None = None
+    ctx: Context, version_or_series: str | None = None
 ) -> str:
     """Fetches YugabyteDB Technical Advisories (TAs), optionally filtered by version or series.
 
@@ -254,32 +254,32 @@ async def get_technical_advisories(
 
             Example Error:
             '{ "error": "Failed to retrieve technical advisories due to: <reason>" }'
-        """
-        target_display = f"{version_or_series}" if version_or_series else "All"
-        logger.info(f"Fetching technical advisories for target: {target_display}")
-        try:
-            # Call the imported fetcher function
-            advisories_data: list[
-                dict
-            ] = fetch_yugabytedb_tech_advisories(
-                target_version_or_series=version_or_series
-                # base_url could be passed here if needed, but defaults are usually fine
-            )
+    """
+    target_display = f"{version_or_series}" if version_or_series else "All"
+    logger.info(f"Fetching technical advisories for target: {target_display}")
+    try:
+        # Call the imported fetcher function
+        advisories_data: list[
+            dict
+        ] = fetch_yugabytedb_tech_advisories(
+            target_version_or_series=version_or_series
+            # base_url could be passed here if needed, but defaults are usually fine
+        )
 
-            logger.success(
-                f"Found {len(advisories_data)} technical advisory/advisories for target {target_display}."
-            )
-            # The fetcher function already returns a list of dicts, ready for JSON
-            return json.dumps(advisories_data)
+        logger.success(
+            f"Found {len(advisories_data)} technical advisory/advisories for target {target_display}."
+        )
+        # The fetcher function already returns a list of dicts, ready for JSON
+        return json.dumps(advisories_data)
 
-        except Exception as e:
-            logger.error(
-                f"Error fetching technical advisories for target {target_display}: {e}",
-                exc_info=True,
-            )
-            return json.dumps(
-                {"error": f"Failed to retrieve technical advisories due to: {e}"}
-            )
+    except Exception as e:
+        logger.error(
+            f"Error fetching technical advisories for target {target_display}: {e}",
+            exc_info=True,
+        )
+        return json.dumps(
+            {"error": f"Failed to retrieve technical advisories due to: {e}"}
+        )
 
 
 @mcp.tool()

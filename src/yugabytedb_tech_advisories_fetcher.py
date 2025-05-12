@@ -290,13 +290,13 @@ if __name__ == "__main__":
     logger.add(sys.stderr, level="INFO") # Change to DEBUG or TRACE for more detail
 
     test_targets = [
-        None,             # Get all
         "2.18",           # Series
         "v2.20.3.0",      # Specific version -> should match 2.20 series
         "2024.1",         # Series
         "2024.2.1.0",     # Specific version -> should match 2024.2 series
         "2.16",           # Series
-        "NonExistentSeries" # Should return empty or log warning
+        "NonExistentSeries", # Should return empty or log warning
+        None,  # Get all
     ]
 
     results: Dict[str, Any] = {}
