@@ -1,26 +1,36 @@
-from mcp.server.fastmcp import FastMCP, Context
-from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator
-# Removed: from dataclasses import dataclass
-from dotenv import load_dotenv
-# Removed: from mem0 import Memory
 import asyncio
 import json
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import asdict # Import asdict
 
-# Removed: from utils import get_db_client
+from dotenv import load_dotenv
+from loguru import logger # Import logger
+from mcp.server.fastmcp import Context, FastMCP
+
+# Import functions and classes from other modules
+from src.yugabytedb_cve_fetcher import (
+    fetch_yugabytedb_cves,
+    YugabyteDbCveInfo,
+)
+from src.yugabytedb_release_info_scraper import (
+    scrape_yugabytedb_release_info,
+    YugabyteReleaseInfo,
+)
+from src.yugabytedb_release_notes_fetcher import fetch_yugabytedb_version_notes
 
 load_dotenv()
 
-# Removed: DEFAULT_USER_ID
+# Fetch NVD API Key from environment if available
+NVD_API_KEY: str | None = os.getenv("NVD_API_KEY")
 
-# Removed: LincolnContext dataclass
 
 @asynccontextmanager
 async def release_info_lifespan(server: FastMCP) -> AsyncIterator[None]:
     """
     Manages the lifecycle for the YugabyteDB Release MCP server.
-    Currently, no specific context is injected.
+    Logs API key usage status.
 
     Args:
         server: The FastMCP server instance
@@ -28,114 +38,275 @@ async def release_info_lifespan(server: FastMCP) -> AsyncIterator[None]:
     Yields:
         None
     """
+    if NVD_API_KEY:
+        logger.info("NVD API Key found and will be used for CVE fetching.")
+    else:
+        logger.warning(
+            "NVD_API_KEY environment variable not set. "
+            "CVE fetching will use lower rate limits."
+        )
     try:
         yield None
     finally:
         pass
 
+
 # Initialize FastMCP server
 mcp = FastMCP(
     "mcp-yugabytedb-release",
     description="MCP server for YugabyteDB Release Information retrieval",
-    lifespan=release_info_lifespan, # Using the new simple lifespan
+    lifespan=release_info_lifespan,
     host=os.getenv("HOST", "0.0.0.0"),
-    port=int(os.getenv("PORT", "8050")) # Ensure port is an integer
+    port=int(os.getenv("PORT", "8050")),
 )
 
+
 @mcp.tool()
-async def get_release_version_info(ctx: Context, version_number: str) -> str:
-    """Provides detailed information for a specific YugabyteDB release version.
+async def get_release_version_info(
+    ctx: Context, version_or_series: str
+) -> str:
+    """Provides detailed release lifecycle information for a specific YugabyteDB version or series.
+
+       This tool scrapes the official YugabyteDB documentation release page
+       (typically https://docs.yugabyte.com/preview/releases/ybdb-releases/)
+       to find information about a given release version or series (e.g., "2.20", "v2024.1", "2.18.3.0").
+       It extracts details about the release's support status and timeline.
+
+       Args:
+           ctx: The MCP server provided context.
+           version_or_series: The YugabyteDB version or series string to look up.
+                              Examples: "2.20", "v2024.1", "2.18.3.0".
+
+       Returns:
+           A JSON string containing the release lifecycle details if found.
+           The JSON object includes the following keys:
+           - `series` (str): The release series identifier (e.g., "2.20").
+           - `type` (str): The release type (e.g., "LTS", "STS", "Preview"). Note: Can be None if not determinable.
+           - `released` (str): The date the first version in the series was released (e.g., "2024-03-15").
+           - `end_of_maintenance` (str): The date maintenance support ends (e.g., "2025-09-30", "No support").
+           - `end_of_life` (str): The date the release reaches end of life (e.g., "2026-03-31", "n/a").
+           - `status` (Literal["Active", "EOL", "Unknown"]): The current status of the release series.
+
+           Example Success:
+           '{ "series": "2.20", "type": "LTS", "released": "2024-03-15", "end_of_maintenance": "2025-09-30", "end_of_life": "2026-03-31", "status": "Active" }'
+
+           Example Not Found / Error:
+           '{ "error": "Release information not found for version/series: 2.99" }'
+           '{ "error": "Failed to retrieve release information due to: <reason>" }'
+       """
+    logger.info(f"Fetching release info for: {version_or_series}")
+    try:
+        # The scraper function expects the target version or series
+        releases_data: list[
+            YugabyteReleaseInfo
+        ] = scrape_yugabytedb_release_info(
+            target_version_or_series=version_or_series
+        )
+
+        if releases_data:
+            # Should return only one item when a target is specified
+            release_info = releases_data[0]
+            # Convert dataclass to dict for JSON serialization
+            response_data = asdict(release_info)
+            logger.success(f"Found release info for {version_or_series}.")
+            return json.dumps(response_data)
+        else:
+            logger.warning(
+                f"Release information not found for: {version_or_series}"
+            )
+            return json.dumps(
+                {
+                    "error": f"Release information not found for version/series: {version_or_series}"
+                }
+            )
+    except Exception as e:
+        logger.error(
+            f"Error scraping release info for {version_or_series}: {e}",
+            exc_info=True,
+        )
+        return json.dumps(
+            {"error": f"Failed to retrieve release information due to: {e}"}
+        )
+
+
+@mcp.tool()
+async def get_cve_list(
+    ctx: Context, version_or_series: str | None = None
+) -> str:
+    """Retrieves a list of Common Vulnerabilities and Exposures (CVEs) related to YugabyteDB.
+
+        This tool queries the National Vulnerability Database (NVD) API v2.0
+        (https://nvd.nist.gov/developers/vulnerabilities) to find CVEs associated
+        with YugabyteDB. It uses keyword searching ("YugabyteDB") and attempts to
+        filter results based on versioning information provided in the NVD data
+        if a specific `version_or_series` is supplied.
+
+        Filtering Logic:
+        - If `version_or_series` is a specific version (e.g., "2.18.1.0", "v2024.1.2.0"):
+          It attempts to match CVEs where NVD data explicitly lists this version or a range
+          including this version as affected.
+        - If `version_or_series` is a series (e.g., "2.18", "v2024.1"):
+          It attempts to match CVEs where NVD data mentions versions within that series
+          as affected (this is heuristic-based).
+        - If `version_or_series` is None:
+          It returns all CVEs found that mention "YugabyteDB" in the NVD database,
+          without version filtering.
+
+        Note: The accuracy of version-based filtering depends on the quality and
+        format of the configuration data provided by NVD for each CVE. An NVD API
+        key (set via the NVD_API_KEY environment variable) is recommended for higher
+        request rates.
+
+        Args:
+            ctx: The MCP server provided context.
+            version_or_series: Optional. The YugabyteDB version or series string to filter by.
+                               Examples: "2.18", "v2024.1", "2.18.1.0". If None, fetches all.
+
+        Returns:
+            A JSON string representing a list of CVE objects matching the criteria.
+            Each CVE object in the list contains:
+            - `cve_id` (str): The unique CVE identifier (e.g., "CVE-2023-1234").
+            - `description` (str): The English description of the vulnerability from NVD.
+            - `cvss_v3_score` (Optional[float]): The CVSS v3 base score, if available.
+            - `cvss_v3_severity` (Optional[str]): The CVSS v3 severity level (e.g., "HIGH"), if available.
+            - `affected_info` (str): A summary string derived from NVD's configuration data indicating
+                                     potentially affected versions/ranges (e.g., "version 2.18.0",
+                                     "in range [>= 2.16.0, < 2.16.5]"). Can be "N/A".
+            - `published_date` (str): The date the CVE was published by NVD (ISO 8601 format).
+            - `last_modified_date` (str): The date the CVE was last modified by NVD (ISO 8601 format).
+            - `url` (str): A direct link to the NVD page for the CVE.
+
+            Example Success:
+            '[ { "cve_id": "CVE-2023-...", "cvss_v3_score": 7.5, "cvss_v3_severity": "HIGH", "affected_info": "version 2.18.1.0", ... }, ... ]'
+
+            Example Error:
+            '{ "error": "Failed to retrieve CVE information due to: <reason>" }'
+        """
+    target_display = f"'{version_or_series}'" if version_or_series else "'All'"
+    logger.info(f"Fetching CVE list for target: {target_display}")
+    try:
+        cves: list[YugabyteDbCveInfo] = fetch_yugabytedb_cves(
+            target_version_or_series=version_or_series, api_key=NVD_API_KEY
+        )
+
+        # Convert list of dataclasses to list of dicts
+        cve_list_dict = [asdict(cve) for cve in cves]
+        logger.success(
+            f"Found {len(cve_list_dict)} CVE(s) for target {target_display}."
+        )
+        return json.dumps(cve_list_dict)
+    except Exception as e:
+        logger.error(
+            f"Error fetching CVEs for target {target_display}: {e}",
+            exc_info=True,
+        )
+        return json.dumps(
+            {"error": f"Failed to retrieve CVE information due to: {e}"}
+        )
+
+
+@mcp.tool()
+async def get_technical_advisories(
+    ctx: Context, version_number: str | None = None
+) -> str:
+    """Fetches technical advisories for YugabyteDB. (Currently Not Implemented)
+
+    Note: This functionality requires a dedicated scraper or data source for
+    technical advisories, which is not yet implemented.
 
     Args:
         ctx: The MCP server provided context.
-        version_number: The YugabyteDB version number (e.g., "2.25.1.0", "2.14.2.0-b381").
+        version_number: Optional YugabyteDB version number (currently ignored).
 
     Returns:
-        A JSON string containing:
-        - version: The full version number.
-        - series: The release series (e.g., "v2.14").
-        - type: Release type (PREVIEW, LTS, STS, NONE).
-        - released: Release date.
-        - end_of_maintenance: End of Maintenance date.
-        - end_of_life: End of Life (EOL) date.
-        - status: Current status (ACTIVE, EOL).
+        A JSON string indicating that the feature is not implemented.
     """
-    # Placeholder implementation
-    # In a real implementation, this would query a database or a data source.
-    response_data = {
-        "version": version_number,
-        "series": "vX.Y", # Placeholder
-        "type": "STS", # Placeholder
-        "released": "YYYY-MM-DD", # Placeholder
-        "end_of_maintenance": "YYYY-MM-DD", # Placeholder
-        "end_of_life": "YYYY-MM-DD", # Placeholder
-        "status": "ACTIVE" # Placeholder
-    }
-    return json.dumps(response_data)
+    logger.warning("get_technical_advisories called, but it is not implemented.")
+    return json.dumps(
+        {
+            "status": "Not Implemented",
+            "message": "Fetching technical advisories is not currently supported.",
+        }
+    )
+
 
 @mcp.tool()
-async def get_cve_list(ctx: Context, version_number: str = None) -> str:
-    """Retrieves a list of CVEs, optionally filtered by YugabyteDB version.
+async def get_release_notes(
+    ctx: Context, version_or_series: str
+) -> str:
+    """Retrieves the release notes content for a specific YugabyteDB version or series.
 
-    Args:
-        ctx: The MCP server provided context.
-        version_number: Optional YugabyteDB version number to filter CVEs.
+        This tool fetches the HTML content from the official YugabyteDB documentation
+        release notes page corresponding to the provided `version_or_series`.
+        For example, if "2.18.3.0" or "v2.18" is provided, it targets the release notes
+        page for the "v2.18" series (e.g., https://docs.yugabyte.com/preview/releases/ybdb-releases/v2.18/).
 
-    Returns:
-        A JSON string representing a list of CVEs.
-    """
-    # Placeholder implementation
-    cves = [
-        {"id": "CVE-YYYY-NNNN1", "description": "Example vulnerability 1", "versions_affected": ["2.x.x"]},
-        {"id": "CVE-YYYY-NNNN2", "description": "Example vulnerability 2", "versions_affected": ["all"]},
-    ]
-    if version_number:
-        # Dummy filter logic
-        cves = [cve for cve in cves if version_number in cve.get("versions_affected", []) or "all" in cve.get("versions_affected", [])]
-    return json.dumps(cves)
+        Processing Steps:
+        1. Constructs the URL for the release series documentation page.
+        2. Fetches the HTML content of that page.
+        3. If a specific version (e.g., "2.18.3.0") was requested, it attempts to isolate
+           the HTML section specific to that version using its heading ID (e.g., "#v2.18.3.0").
+           If this specific section cannot be found, it falls back to processing the notes
+           for the entire series page.
+        4. Cleans the HTML by removing irrelevant sections like download links, third-party
+           licenses, and Docker commands.
+        5. Converts the cleaned HTML content into Markdown format suitable for LLM consumption.
 
-@mcp.tool()
-async def get_technical_advisories(ctx: Context, version_number: str) -> str:
-    """Fetches technical advisories for a specific YugabyteDB version.
+        Args:
+            ctx: The MCP server provided context.
+            version_or_series: The YugabyteDB version or series number.
+                               Examples: "2.20", "v2024.1", "2.18.3.0", "v2.16.5.0".
 
-    Args:
-        ctx: The MCP server provided context.
-        version_number: The YugabyteDB version number.
+        Returns:
+            A string containing the release notes in Markdown format if found and processed
+            successfully. If processing fails or the version/series is invalid, it returns
+            an error message string.
 
-    Returns:
-        A JSON string containing a list of technical advisories (e.g., titles and links).
-    """
-    # Placeholder implementation
-    advisories = [
-        {"title": f"Advisory 1 for {version_number}", "link": "https://docs.yugabyte.com/preview/releases/techadvisories/example1"},
-        {"title": f"Advisory 2 for {version_number}", "link": "https://docs.yugabyte.com/preview/releases/techadvisories/example2"},
-    ]
-    return json.dumps(advisories)
+            Example Success (Markdown content):
+            "### New Features\\n\\n*   Feature A...\\n\\n### Improvements\\n\\n*   Improvement B..."
 
-@mcp.tool()
-async def get_release_notes(ctx: Context, version_number: str) -> str:
-    """Provides a link to or content of the release notes for a specific YugabyteDB version.
+            Example Error:
+            "Error: Release notes could not be found or generated for '2.99'. The version might be invalid, too old, or the documentation structure may have changed."
+            "Error: Failed to retrieve release notes for '2.18.3.0' due to: <reason>"
+        """
+    logger.info(f"Fetching release notes for: {version_or_series}")
+    try:
+        notes: str | None = fetch_yugabytedb_version_notes(version_or_series)
 
-    Args:
-        ctx: The MCP server provided context.
-        version_number: The YugabyteDB version number.
+        if notes:
+            logger.success(
+                f"Successfully fetched release notes for {version_or_series}."
+            )
+            # Limit output length slightly for logs if notes are very long
+            logger.debug(f"Notes snippet: {notes[:200]}...")
+            return notes
+        else:
+            logger.warning(
+                f"Could not find or generate release notes for: {version_or_series}"
+            )
+            return (
+                f"Error: Release notes could not be found or generated for "
+                f"'{version_or_series}'. The version might be invalid, too old, "
+                f"or the documentation structure may have changed."
+            )
+    except Exception as e:
+        logger.error(
+            f"Error fetching release notes for {version_or_series}: {e}",
+            exc_info=True,
+        )
+        return f"Error: Failed to retrieve release notes for '{version_or_series}' due to: {e}"
 
-    Returns:
-        A string, which could be a URL to the release notes or the notes content itself.
-    """
-    # Placeholder implementation
-    # Example: "v2.20.1.0" -> "v2.20" for URL construction
-    series_part = ".".join(version_number.split(".")[:2]) # e.g., "2.20"
-    if series_part.startswith("v"):
-         url_series_part = series_part
-    else:
-        url_series_part = "v" + series_part # e.g., "v2.20"
-
-    release_notes_url = f"https://docs.yugabyte.com/preview/releases/ybdb-releases/{url_series_part}/#change-log"
-    return f"Release notes for {version_number} can be found at: {release_notes_url}"
 
 async def main():
+    # Configure logging level (e.g., INFO for summary, DEBUG for details)
+    # Set log level via environment variable or directly
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    logger.remove() # Remove default handler
+    logger.add(sys.stderr, level=log_level) # Add back with configured level
+    logger.info(f"Log level set to: {log_level}")
+
     transport = os.getenv("TRANSPORT", "sse")
+    logger.info(f"Using transport: {transport}")
     if transport == 'sse':
         # Run the MCP server with sse transport
         await mcp.run_sse_async()
@@ -143,5 +314,8 @@ async def main():
         # Run the MCP server with stdio transport
         await mcp.run_stdio_async()
 
+
 if __name__ == "__main__":
+    # Need sys for logger configuration in main
+    import sys
     asyncio.run(main())
