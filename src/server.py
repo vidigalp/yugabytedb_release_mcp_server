@@ -1,3 +1,4 @@
+import sys
 import asyncio
 import json
 import os
@@ -7,20 +8,20 @@ from dataclasses import asdict # Import asdict
 
 from dotenv import load_dotenv
 from loguru import logger # Import logger
-from mcp.server.fastmcp import Context, FastMCP
+from fastmcp import Context, FastMCP
 
 # Import functions and classes from other modules
-from src.yugabytedb_cve_fetcher import (
+from yugabytedb_cve_fetcher import (
     fetch_yugabytedb_cves,
     YugabyteDbCveInfo,
 )
-from src.yugabytedb_release_info_scraper import (
+from yugabytedb_release_info_scraper import (
     scrape_yugabytedb_release_info,
     YugabyteReleaseInfo,
 )
-from src.yugabytedb_release_notes_fetcher import fetch_yugabytedb_version_notes
+from yugabytedb_release_notes_fetcher import fetch_yugabytedb_version_notes
 
-from src.yugabytedb_tech_advisories_fetcher import (
+from yugabytedb_tech_advisories_fetcher import (
     fetch_yugabytedb_tech_advisories,
     YugabyteTechAdvisory,
 )
@@ -361,13 +362,12 @@ async def main():
     logger.info(f"Using transport: {transport}")
     if transport == 'sse':
         # Run the MCP server with sse transport
-        await mcp.run_sse_async()
+        await mcp.run_http_async()
     else:
         # Run the MCP server with stdio transport
         await mcp.run_stdio_async()
 
 
 if __name__ == "__main__":
-    # Need sys for logger configuration in main
-    import sys
+
     asyncio.run(main())

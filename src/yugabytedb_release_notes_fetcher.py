@@ -14,16 +14,8 @@ from crawl4ai.content_filter_strategy import PruningContentFilter, BM25ContentFi
 from crawl4ai.async_configs import CrawlerRunConfig
 from loguru import logger
 
-# Assuming common_utils.py is in the same directory or src and contains _normalize_version_string
-# from .common_utils import _normalize_version_string
-# For now, if common_utils is not available, we'll define a simple normalizer here.
-# If you have `src.common_utils._normalize_version_string`, uncomment the import above
-# and remove the local _normalize_version_string function.
-def _normalize_version_string(version_str: str) -> str:
-    """Helper to normalize version strings, e.g., 'v2.20.1' -> '2.20.1'."""
-    if not version_str:
-        return ""
-    return version_str.lstrip('vV ')
+#from common_utils import _normalize_version_string
+
 
 def _parse_input_to_url_parts(version_or_series: str) -> Tuple[str, Optional[str]]:
     """

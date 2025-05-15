@@ -1,3 +1,9 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+backend-path = ["."]
+
+
 [project]
 name = "yugabytedb-release-mcp-server"
 version = "0.1.0"
@@ -9,9 +15,17 @@ dependencies = [
     "beautifulsoup4>=4.13.4",
     "crawl4ai>=0.6.2",
     "dotenv>=0.9.9",
+    "fastmcp>=2.3.4",
     "feedparser>=6.0.11",
     "loguru>=0.7.3",
     "mcp[cli]>=1.8.0",
     "pytest>=8.3.5",
     "requests>=2.32.3",
 ]
+
+# pyproject.toml
+[[tool.uv.index]]
+name = "gar"                                                                            # any name you like
+url = "https://us-east1-python.pkg.dev/yugabyte-support/yb-support-python-libs"
+publish-url = "https://us-east1-python.pkg.dev/yugabyte-support/yb-support-python-libs"
+explicit = true                                                                         # prevents accidental PyPI fallback

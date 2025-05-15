@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup, Tag
 from bs4.element import NavigableString
 from loguru import logger
 
-from src.common_utils import _normalize_version_string
+from common_utils import _normalize_version_string
 
 
 @dataclasses.dataclass
@@ -111,7 +111,7 @@ def _parse_table(
                 series_name = series_name.removesuffix(" Preview").strip()
             elif series_name.endswith("Preview"):
                  series_name = series_name.removesuffix("Preview").strip()
-        
+
         #if not release_type_str: # Check added from previous steps, ensuring it's still here
         #    logger.warning(f"Could not determine release type string for series '{series_name}' from cell '{series_cell_text}'. Skipping row.")
         #    continue

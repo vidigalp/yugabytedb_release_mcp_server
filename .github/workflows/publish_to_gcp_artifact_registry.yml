@@ -1,0 +1,62 @@
+name: Build and Publish Python Package to GCP Artifact Registry
+
+on:
+  push:
+    branches:
+      - main # Or your default branch, e.g., master
+
+permissions:
+  contents: "read"
+  id-token: "write" # Required for Workload Identity Federation
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    env:
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GCP_ARTIFACT_REGISTRY_LOCATION: "us-east1"
+      GCP_ARTIFACT_REGISTRY_REPOSITORY: "yb-support-python-libs"
+      PYTHON_VERSION: "3.12" # Specify your desired Python version
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv package manager
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          uv --version
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: "google-github-actions/auth@v2"
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Install build dependencies and keyring
+        run: |
+          uv pip install --system build twine keyring keyrings.google-artifactregistry-auth
+          # Using --system installs into the Python environment managed by setup-python.
+          # For isolated builds, you might consider 'uv venv' and then installing into that venv.
+
+      - name: Build Python package
+        run: python -m build
+
+      - name: Publish package to GCP Artifact Registry
+        env:
+          # The ARTIFACT_REGISTRY_URL for Python packages using the keyring auth
+          TWINE_REPOSITORY_URL: "artifactregistry://${{ env.GCP_ARTIFACT_REGISTRY_LOCATION }}-python.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.GCP_ARTIFACT_REGISTRY_REPOSITORY }}"
+        run: |
+          echo "Listing built packages in dist/:"
+          ls -R dist/
+          echo "Uploading to ${TWINE_REPOSITORY_URL}"
+          # Twine will automatically use keyring and pick up credentials via google-artifactregistry-auth
+          # which uses the Application Default Credentials configured by the 'google-github-actions/auth' step.
+          twine upload --verbose --repository-url "${TWINE_REPOSITORY_URL}" dist/*

@@ -1,0 +1,100 @@
+Metadata-Version: 2.4
+Name: yugabytedb-release-mcp-server
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: asyncio>=3.4.3
+Requires-Dist: beautifulsoup4>=4.13.4
+Requires-Dist: crawl4ai>=0.6.2
+Requires-Dist: dotenv>=0.9.9
+Requires-Dist: fastmcp>=2.3.4
+Requires-Dist: feedparser>=6.0.11
+Requires-Dist: loguru>=0.7.3
+Requires-Dist: mcp[cli]>=1.8.0
+Requires-Dist: pytest>=8.3.5
+Requires-Dist: requests>=2.32.3
+Dynamic: license-file
+
+# yugabytedb_release_mcp_server/README.md
+# YugabyteDB Release MCP Server
+
+## Purpose
+
+The YugabyteDB Release MCP ([Model Context Protocol](https://modelcontextprotocol.io/)) Server is designed to provide Large Language Models (LLMs) with contextual information related to YugabyteDB software releases. It fetches data from official sources like the YugabyteDB documentation and the National Vulnerability Database (NVD) to enable LLMs to answer queries and generate content with up-to-date and accurate details about different YugabyteDB versions.
+
+## Functionality
+
+The MCP Server provides the following tools:
+
+*   **`get_release_version_info(version_or_series: str)`:**
+    *   **Source:** Scrapes the official YugabyteDB documentation release page.
+    *   **Returns:** A JSON string containing release lifecycle details for the specified version or series.
+        *   `series` (str): Release series identifier (e.g., "2.20").
+        *   `type` (Optional[str]): Release type (e.g., "LTS", "STS", "Preview").
+        *   `released` (str): Date the series was first released.
+        *   `end_of_maintenance` (str): End of maintenance date.
+        *   `end_of_life` (str): End of life date.
+        *   `status` (Literal["Active", "EOL", "Unknown"]): Current status.
+*   **`get_cve_list(version_or_series: Optional[str] = None)`:**
+    *   **Source:** Queries the National Vulnerability Database (NVD) API v2.0.
+    *   **Returns:** A JSON string representing a list of CVE objects related to YugabyteDB, optionally filtered by the specified version or series. Each object includes:
+        *   `cve_id` (str): CVE identifier.
+        *   `description` (str): Vulnerability description.
+        *   `cvss_v3_score` (Optional[float]): CVSS v3 base score.
+        *   `cvss_v3_severity` (Optional[str]): CVSS v3 severity.
+        *   `affected_info` (str): Summary of affected versions/ranges from NVD data.
+        *   `published_date` (str): NVD publication date.
+        *   `last_modified_date` (str): NVD last modification date.
+        *   `url` (str): Link to the NVD entry.
+    *   **Note:** Using an `NVD_API_KEY` environment variable is recommended for better performance.
+*   **`get_release_notes(version_or_series: str)`:**
+    *   **Source:** Scrapes and processes the release notes section from the official YugabyteDB documentation page for the specified version or series.
+    *   **Returns:** A string containing the release notes content in Markdown format. It attempts to isolate the specific version's notes but may fall back to the entire series notes.
+*   **`get_technical_advisories(version_or_series: Optional[str] = None)`:**
+    *   **Source:** Scrapes the official YugabyteDB Technical Advisories documentation page.
+    *   **Returns:** A JSON string representing a list of Technical Advisory (TA) objects, optionally filtered by the specified version or series. If filtered, it matches TAs affecting the derived series (e.g., "2.18" from "2.18.1.0"). Each object includes:
+        *   `id` (str): The advisory identifier (e.g., "TA-12345").
+        *   `title` (str): The title of the advisory.
+        *   `url` (str): The direct URL to the advisory's page.
+        *   `affected_versions_raw` (str): The raw text from the 'Affected Versions' column.
+        *   `affected_series_parsed` (List[str]): A list of series identifiers parsed from the raw text (e.g., ["2.18", "2.20"]).
+        *   `content` (Optional[str]): The fetched text content of the advisory page (or an error message if fetching failed).
+
+## Technical Stack
+
+*   **Programming Language:** Python 3.12
+*   **Framework:** FastMCP
+*   **Key Libraries:** `requests`, `beautifulsoup4`, `packaging`, `loguru`, `python-dotenv`, `crawl4ai`
+*   **Package Manager:** `uv` (recommended) or `pip`
+
+## Getting Started
+
+### Prerequisites
+
+*   Python 3.12
+*   `uv` package manager (recommended, or `pip` with `venv`)
+
+### Installation
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd yugabytedb_release_mcp_server
+
+# Create a virtual environment using uv (recommended)
+uv venv
+source .venv/bin/activate # Or `.\.venv\Scripts\activate` on Windows
+
+# Install dependencies using uv
+uv pip install -r requirements.txt # Make sure requirements.txt is up-to-date
+
+# --- OR ---
+
+# Create a virtual environment using venv
+# python -m venv .venv
+# source .venv/bin/activate # Or `.\.venv\Scripts\activate` on Windows
+
+# Install dependencies using pip
+# pip install -r requirements.txt

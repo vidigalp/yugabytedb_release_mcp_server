@@ -17,17 +17,8 @@ import requests
 from bs4 import BeautifulSoup, Tag
 from loguru import logger
 
-# Assuming common_utils.py exists in src or parent and contains _normalize_version_string
-# If not, uncomment and use the local version below
-# from src.common_utils import _normalize_version_string
+from common_utils import _normalize_version_string
 
-# --- Local _normalize_version_string if common_utils is not available ---
-def _normalize_version_string(version_str: Optional[str]) -> str:
-    """Helper to normalize version strings, e.g., 'v2.20.1' -> '2.20.1'."""
-    if not version_str:
-        return ""
-    return version_str.strip().lstrip('vV ')
-# --- End Local Helper ---
 
 
 @dataclasses.dataclass

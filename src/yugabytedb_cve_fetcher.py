@@ -16,18 +16,8 @@ import requests
 from loguru import logger
 from packaging import version as pkg_version
 
-# Attempt to import shared normalization function, fallback to local definition
-try:
-    # Assuming common_utils is in the same 'src' directory level
-    from src.common_utils import _normalize_version_string
-except ImportError:
-    logger.warning("Could not import _normalize_version_string from src.common_utils. Using local definition.")
-    def _normalize_version_string(version_str: Optional[str]) -> Optional[str]:
-        """Helper to normalize version strings, e.g., 'v2.20.1' -> '2.20.1'."""
-        if not version_str:
-            return None
-        # Remove leading 'v' or 'V' and surrounding whitespace
-        return version_str.lstrip('vV ').strip()
+from common_utils import _normalize_version_string
+
 
 @dataclasses.dataclass
 class YugabyteDbCveInfo:
