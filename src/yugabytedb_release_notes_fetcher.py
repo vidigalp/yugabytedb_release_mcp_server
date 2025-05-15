@@ -292,7 +292,7 @@ def fetch_yugabytedb_version_notes(version_or_series: str) -> Optional[str]:
         return None
 
     logger.info(f"Finished processing release notes for '{version_or_series}'.")
-    return markdown
+    return {"release_notes": markdown.markdown_with_citations}
 
 if __name__ == "__main__":
     import sys

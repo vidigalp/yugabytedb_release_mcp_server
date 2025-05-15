@@ -15,6 +15,7 @@ Requires-Dist: loguru>=0.7.3
 Requires-Dist: mcp[cli]>=1.8.0
 Requires-Dist: pytest>=8.3.5
 Requires-Dist: requests>=2.32.3
+Requires-Dist: typer>=0.15.4
 Dynamic: license-file
 
 # yugabytedb_release_mcp_server/README.md

@@ -192,7 +192,8 @@ async def get_cve_list(
     logger.info(f"Fetching CVE list for target: {target_display}")
     try:
         cves: list[YugabyteDbCveInfo] = fetch_yugabytedb_cves(
-            target_version_or_series=version_or_series, api_key=NVD_API_KEY
+            target_version_or_series=version_or_series,
+            api_key=NVD_API_KEY
         )
 
         # Convert list of dataclasses to list of dicts
@@ -293,17 +294,6 @@ async def get_release_notes(
         release notes page corresponding to the provided `version_or_series`.
         For example, if "2.18.3.0" or "v2.18" is provided, it targets the release notes
         page for the "v2.18" series (e.g., https://docs.yugabyte.com/preview/releases/ybdb-releases/v2.18/).
-
-        Processing Steps:
-        1. Constructs the URL for the release series documentation page.
-        2. Fetches the HTML content of that page.
-        3. If a specific version (e.g., "2.18.3.0") was requested, it attempts to isolate
-           the HTML section specific to that version using its heading ID (e.g., "#v2.18.3.0").
-           If this specific section cannot be found, it falls back to processing the notes
-           for the entire series page.
-        4. Cleans the HTML by removing irrelevant sections like download links, third-party
-           licenses, and Docker commands.
-        5. Converts the cleaned HTML content into Markdown format suitable for LLM consumption.
 
         Args:
             ctx: The MCP server provided context.
